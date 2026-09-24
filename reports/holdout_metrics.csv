@@ -1,0 +1,5 @@
+,rmse,mae,r2,severity_accuracy
+Global mean,0.5176,0.4250,-0.0008,0.5857
+Historical mean (cp x slot x weekend),0.1458,0.1061,0.9206,0.8640
+LightGBM (tuned),0.1056,0.0838,0.9583,0.8821
+XGBoost,0.1036,0.0826,0.9599,0.8851

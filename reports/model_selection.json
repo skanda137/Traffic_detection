@@ -1,0 +1,35 @@
+{
+  "data_volume": {
+    "train_rows": 10500,
+    "chokepoints": 75,
+    "train_days": 35,
+    "rows_per_chokepoint": 140,
+    "series_length_per_chokepoint_slot": 35,
+    "distinct_feature_rows": 10500
+  },
+  "selected_model": "LightGBM",
+  "tuning_fold_rmse": {
+    "LightGBM": 0.09948561353923231,
+    "XGBoost": 0.10055803066294279
+  },
+  "boosting_rounds": {
+    "LightGBM": 485,
+    "XGBoost": 153
+  },
+  "lightgbm_params": {
+    "learning_rate": 0.02139954903017622,
+    "num_leaves": 41,
+    "max_depth": 3,
+    "min_child_samples": 42,
+    "bagging_fraction": 0.6298202574719083,
+    "feature_fraction": 0.9947547746402069,
+    "lambda_l1": 1.2273800987852967,
+    "lambda_l2": 0.0062353771356731605,
+    "objective": "regression",
+    "metric": "rmse",
+    "verbosity": -1,
+    "seed": 42,
+    "bagging_freq": 1
+  },
+  "improvement_over_historical_pct": 27.518389107776166
+}

@@ -32,11 +32,13 @@ def validate_traffic_data(df: pd.DataFrame) -> pd.DataFrame:
         if col in ["rainfall_mm", "visibility_km", "congestion_ratio"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
         elif col in ["day_of_week", "is_weekend", "is_festival", "school_term"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce").astype(int)
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
 
     if df[list(REQUIRED_COLUMNS.keys())].isnull().any().any():
         null_counts = df[list(REQUIRED_COLUMNS.keys())].isnull().sum()
         raise ValueError(f"Data contains unhandled NaNs:\n{null_counts[null_counts > 0]}")
+    for col in ["day_of_week", "is_weekend", "is_festival", "school_term"]:
+        df[col] = df[col].astype(int)
 
     # 3. Domain Logic Validations
     invalid_slots = set(df["time_slot"].unique()) - VALID_SLOTS
