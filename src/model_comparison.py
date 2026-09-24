@@ -35,6 +35,9 @@ SEVERITY_LABELS = ["Low", "Moderate", "Severe"]
 
 SEED = 42
 
+# Tuning-fold RMSEs within 1% of each other are treated as a tie (noise, not signal)
+TIE_TOLERANCE = 0.01
+
 
 def load_data(path=DATA_PATH):
     return validate_traffic_data(pd.read_csv(path))
@@ -150,15 +153,54 @@ def tune_lightgbm(X_fit, y_fit, X_tune, y_tune, n_trials=25):
     return params, study.best_trial.user_attrs["best_iteration"], study.best_value
 
 
-XGB_PARAMS = dict(
-    learning_rate=0.05,
-    max_depth=5,
-    subsample=0.8,
-    colsample_bytree=0.8,
+XGB_BASE_PARAMS = dict(
     enable_categorical=True,
     tree_method="hist",
     random_state=SEED,
 )
+
+
+def tune_xgboost(X_fit, y_fit, X_tune, y_tune, n_trials=25):
+    # Search space mirrors tune_lightgbm(); for squared-error loss each row has hessian 1,
+    # so min_child_weight counts rows exactly like LightGBM's min_child_samples
+    import optuna
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    def objective(trial):
+        params = {
+            **XGB_BASE_PARAMS,
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.15, log=True),
+            "max_depth": trial.suggest_int("max_depth", 3, 8),
+            "min_child_weight": trial.suggest_int("min_child_weight", 10, 50),
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-3, 10.0, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True),
+        }
+        model = xgb.XGBRegressor(n_estimators=1000, early_stopping_rounds=50, **params)
+        model.fit(X_fit, y_fit, eval_set=[(X_tune, y_tune)], verbose=False)
+        trial.set_user_attr("best_iteration", model.best_iteration + 1)
+        return root_mean_squared_error(y_tune, model.predict(X_tune))  # predicts with best_iteration
+
+    study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=SEED))
+    study.optimize(objective, n_trials=n_trials)
+    params = {**XGB_BASE_PARAMS, **study.best_params}
+    return params, study.best_trial.user_attrs["best_iteration"], study.best_value
+
+
+def select_model(candidates, tolerance=TIE_TOLERANCE):
+    """candidates: {name: (tuning_fold_rmse, boosting_rounds)}. Uses tuning-fold numbers only."""
+    (best, (best_rmse, best_rounds)), (other, (other_rmse, other_rounds)) = sorted(
+        candidates.items(), key=lambda kv: kv[1][0])
+    rel_gap = (other_rmse - best_rmse) / best_rmse
+    if rel_gap >= tolerance:
+        return {"selected": best, "rule": "clear_winner", "relative_rmse_gap": rel_gap,
+                "reason": f"{best} tuning RMSE {best_rmse:.4f} is {rel_gap:.2%} lower than {other}'s {other_rmse:.4f} (>= {tolerance:.0%})"}
+    if other_rounds < best_rounds:
+        best, best_rounds, other, other_rounds = other, other_rounds, best, best_rounds
+    return {"selected": best, "rule": "tie_break_fewer_rounds", "relative_rmse_gap": rel_gap,
+            "reason": f"tuning RMSE gap {rel_gap:.2%} < {tolerance:.0%}; preferring {best} "
+                      f"({best_rounds} rounds vs {other_rounds}) for cheaper inference"}
 
 
 def execute_pipeline():
@@ -180,24 +222,22 @@ def execute_pipeline():
     lgb_params, lgb_rounds, lgb_tune_rmse = tune_lightgbm(X_fit, y_fit, X_tune, y_tune)
     print(f"LightGBM tuning-fold RMSE: {lgb_tune_rmse:.4f} ({lgb_rounds} rounds)")
 
-    xgb_probe = xgb.XGBRegressor(n_estimators=1000, early_stopping_rounds=50, **XGB_PARAMS)
-    xgb_probe.fit(X_fit, y_fit, eval_set=[(X_tune, y_tune)], verbose=False)
-    xgb_rounds = xgb_probe.best_iteration + 1
-    xgb_tune_rmse = root_mean_squared_error(y_tune, xgb_probe.predict(X_tune))
+    xgb_params, xgb_rounds, xgb_tune_rmse = tune_xgboost(X_fit, y_fit, X_tune, y_tune)
     print(f"XGBoost  tuning-fold RMSE: {xgb_tune_rmse:.4f} ({xgb_rounds} rounds)")
 
     print("\n--- 2. Refit on all 5 training weeks ---")
     lgb_model = lgb.train(lgb_params, lgb.Dataset(X_tr, label=y_tr), num_boost_round=lgb_rounds)
-    xgb_model = xgb.XGBRegressor(n_estimators=xgb_rounds, **XGB_PARAMS).fit(X_tr, y_tr)
+    xgb_model = xgb.XGBRegressor(n_estimators=xgb_rounds, **xgb_params).fit(X_tr, y_tr)
 
     # Model selection uses the tuning fold only; the holdout never influences which model ships
-    chosen_name = "LightGBM" if lgb_tune_rmse <= xgb_tune_rmse else "XGBoost"
+    selection = select_model({"LightGBM": (lgb_tune_rmse, lgb_rounds), "XGBoost": (xgb_tune_rmse, xgb_rounds)})
+    chosen_name = selection["selected"]
     chosen_model = lgb_model if chosen_name == "LightGBM" else xgb_model
-    print(f"Selected on tuning fold: {chosen_name}")
+    print(f"Selected on tuning fold: {chosen_name} [{selection['rule']}] - {selection['reason']}")
 
     predictions = naive_baselines(train_df, holdout_df)
     predictions["LightGBM (tuned)"] = lgb_model.predict(X_va)
-    predictions["XGBoost"] = xgb_model.predict(X_va)
+    predictions["XGBoost (tuned)"] = xgb_model.predict(X_va)
 
     results = pd.DataFrame({name: score(y_va, p) for name, p in predictions.items()}).T
     print("\n================ HOLDOUT RESULTS (weeks 6-8, never seen in training/tuning) ================")
@@ -205,7 +245,7 @@ def execute_pipeline():
     print("=============================================================================================")
 
     hist_rmse = results.loc["Historical mean (cp x slot x weekend)", "rmse"]
-    chosen_key = "LightGBM (tuned)" if chosen_name == "LightGBM" else "XGBoost"
+    chosen_key = f"{chosen_name} (tuned)"
     gain = 100 * (1 - results.loc[chosen_key, "rmse"] / hist_rmse)
     print(f"{chosen_name} RMSE improvement over historical-average baseline: {gain:.1f}%")
 
@@ -224,10 +264,11 @@ def execute_pipeline():
     results.to_csv(REPORT_DIR / "holdout_metrics.csv", float_format="%.4f")
     importance.rename("gain_share").to_csv(REPORT_DIR / "feature_importance.csv", float_format="%.4f")
     with open(REPORT_DIR / "model_selection.json", "w") as f:
-        json.dump({"data_volume": volume, "selected_model": chosen_name,
+        json.dump({"data_volume": volume, "selected_model": chosen_name, "selection": selection,
                    "tuning_fold_rmse": {"LightGBM": lgb_tune_rmse, "XGBoost": xgb_tune_rmse},
                    "boosting_rounds": {"LightGBM": lgb_rounds, "XGBoost": xgb_rounds},
                    "lightgbm_params": lgb_params,
+                   "xgboost_params": xgb_params,
                    "improvement_over_historical_pct": gain}, f, indent=2, default=float)
     print(f"\nExported {chosen_name} model to {MODEL_PATH.relative_to(ROOT)}; reports in {REPORT_DIR.relative_to(ROOT)}/")
 

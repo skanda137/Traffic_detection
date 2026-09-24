@@ -1,5 +1,5 @@
 time_slot,mae,bias,count
-midday,0.0884,-0.0066,1575
-evening_peak,0.0852,0.0028,1575
-morning_peak,0.0848,-0.0012,1575
-night,0.0769,0.0025,1575
+midday,0.0844,-0.0036,1575
+morning_peak,0.0836,-0.0022,1575
+evening_peak,0.0835,-0.0034,1575
+night,0.0759,0.0052,1575

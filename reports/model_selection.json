@@ -7,14 +7,20 @@
     "series_length_per_chokepoint_slot": 35,
     "distinct_feature_rows": 10500
   },
-  "selected_model": "LightGBM",
+  "selected_model": "XGBoost",
+  "selection": {
+    "selected": "XGBoost",
+    "rule": "tie_break_fewer_rounds",
+    "relative_rmse_gap": 0.0004739752459035595,
+    "reason": "tuning RMSE gap 0.05% < 1%; preferring XGBoost (384 rounds vs 485) for cheaper inference"
+  },
   "tuning_fold_rmse": {
     "LightGBM": 0.09948561353923231,
-    "XGBoost": 0.10055803066294279
+    "XGBoost": 0.09953276725737344
   },
   "boosting_rounds": {
     "LightGBM": 485,
-    "XGBoost": 153
+    "XGBoost": 384
   },
   "lightgbm_params": {
     "learning_rate": 0.02139954903017622,
@@ -31,5 +37,17 @@
     "seed": 42,
     "bagging_freq": 1
   },
-  "improvement_over_historical_pct": 27.518389107776166
+  "xgboost_params": {
+    "enable_categorical": true,
+    "tree_method": "hist",
+    "random_state": 42,
+    "learning_rate": 0.016632061018598165,
+    "max_depth": 4,
+    "min_child_weight": 33,
+    "subsample": 0.8442386404770278,
+    "colsample_bytree": 0.9734142577999754,
+    "reg_alpha": 0.03796723806994831,
+    "reg_lambda": 0.028872700205980383
+  },
+  "improvement_over_historical_pct": 29.44717464496759
 }

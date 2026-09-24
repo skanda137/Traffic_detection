@@ -45,10 +45,16 @@ def validate_traffic_data(df: pd.DataFrame) -> pd.DataFrame:
     if invalid_slots:
         raise ValueError(f"Invalid time slots found: {invalid_slots}")
 
-    # Congestion ratio must be >= 1.0 (traffic duration >= free-flow duration)
-    invalid_ratios = (df["congestion_ratio"] < 0.95).sum()
+    # Congestion ratio should be >= 1.0 (traffic duration >= free-flow duration), but the
+    # traffic-aware route can differ from the free-flow reference route, so slightly-under-1.0
+    # values are plausible API artefacts. Only clearly broken ratios are fatal.
+    invalid_ratios = (df["congestion_ratio"] < 0.90).sum()
     if invalid_ratios > 0:
-        raise ValueError(f"Found {invalid_ratios} records with congestion_ratio < 0.95. Target computation flawed.")
+        raise ValueError(f"Found {invalid_ratios} records with congestion_ratio < 0.90. Target computation flawed.")
+    sub_unity = ((df["congestion_ratio"] >= 0.90) & (df["congestion_ratio"] < 1.0)).sum()
+    if sub_unity > 0:
+        print(f"WARNING: {sub_unity} records have congestion_ratio in [0.90, 1.0) "
+              f"(traffic-aware route likely differs from free-flow reference route); keeping them.")
 
     # Convert dates
     df["date"] = pd.to_datetime(df["date"])
