@@ -3,7 +3,7 @@ import joblib
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import mean_absolute_error, root_mean_squared_error, r2_score
 
 FEATURE_DATA_PATH = Path("model_featured_traffic.parquet")
 MODEL_EXPORT_PATH = Path("traffic_model_final.pkl")
@@ -21,8 +21,7 @@ def train_production_model():
         "day_of_week", "weather"
     ]
 
-    # Block Temporal Split: Train on Weekdays (0-4), Validate on Weekends (5-6)
-    # This simulates out-of-sample forward deployment
+    # Block Temporal Split: Weekdays (0-4) train, Weekends (5-6) holdout
     print("Constructing Temporal Block Holdout Split (Weekdays -> Weekend)...")
     train_mask = df["is_weekend"] == 0
     val_mask = df["is_weekend"] == 1
@@ -61,7 +60,7 @@ def train_production_model():
     )
 
     preds = model.predict(X_val)
-    rmse = mean_squared_error(y_val, preds, squared=False)
+    rmse = root_mean_squared_error(y_val, preds)
     mae = mean_absolute_error(y_val, preds)
     r2 = r2_score(y_val, preds)
 
