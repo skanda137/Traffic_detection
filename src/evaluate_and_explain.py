@@ -14,7 +14,10 @@ def run_diagnostics():
     df = pd.read_parquet(FEATURE_DATA_PATH)
     val_df = df[df["is_weekend"] == 1].sample(n=100000, random_state=42).copy()
 
-    val_df["pred_travel_time"] = model.predict(val_df[features])
+    preds = model.predict(val_df[features])
+    if artifacts.get("log_transformed"):
+        preds = np.expm1(preds)
+    val_df["pred_travel_time"] = preds
     val_df["abs_error"] = np.abs(val_df["travel_time"] - val_df["pred_travel_time"])
 
     print("\n--- Diagnostic 1: Error Across Weather States ---")
@@ -41,6 +44,7 @@ class TrafficInferenceService:
         bundle = joblib.load(artifact_path)
         self.model = bundle["model"]
         self.features = bundle["features"]
+        self.log_transformed = bundle.get("log_transformed", False)
 
     def predict(self, record: dict) -> dict:
         row = pd.DataFrame([record])
@@ -59,6 +63,8 @@ class TrafficInferenceService:
         row["weather"] = row["weather"].astype("category")
 
         pred_time = float(self.model.predict(row[self.features])[0])
+        if self.log_transformed:
+            pred_time = float(np.expm1(pred_time))
         free_flow_est = float(row["distance"].values[0] / 40.0 * 60.0) # Assume 40 km/h baseline
         inferred_congestion_ratio = max(1.0, pred_time / max(free_flow_est, 1.0))
 
