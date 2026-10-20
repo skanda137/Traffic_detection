@@ -51,11 +51,11 @@ FORECAST_FEATURES = [f for f in V1_FEATURES if f not in
 BASE_RAW_INPUTS = ["lat_src", "lon_src", "lat_dest", "lon_dest", "distance", "day_of_week", "hour", "weather"]
 
 
-def load_split():
+def load_split(seed=SEED):
     """Cleaned rows -> feature_pipeline -> random 70/15/15. Returns raw rows too (same index) for inference checks."""
     raw = pd.read_parquet(CLEAN_DATA_PATH)
     df = engineer_features(raw)
-    perm = np.random.default_rng(SEED).permutation(len(df))
+    perm = np.random.default_rng(seed).permutation(len(df))
     n_train, n_val = int(0.70 * len(df)), int(0.85 * len(df))
     train, val, test = df.iloc[perm[:n_train]], df.iloc[perm[n_train:n_val]], df.iloc[perm[n_val:]]
     categories = {col: sorted(train[col].unique().tolist()) for col in CATEGORICAL}
