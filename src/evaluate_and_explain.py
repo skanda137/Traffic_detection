@@ -1,9 +1,10 @@
+import json
 from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
 
-from feature_pipeline import apply_categories, engineer_features
+from feature_pipeline import apply_categories, engineer_features, input_range_violations, raw_tortuosity
 
 MODEL_EXPORT_PATH = Path("traffic_model_final.pkl")
 FEATURE_DATA_PATH = Path("model_featured_traffic.parquet")
@@ -42,7 +43,16 @@ def run_diagnostics():
 
 class TrafficInferenceService:
     """Production Inference Service for Member D's UI."""
-    def __init__(self, artifact_path):
+    FIELD_LABELS = {
+        "distance": "distance (km)",
+        "haversine_dist": "haversine_dist (straight-line km between the coordinates)",
+        "raw_tortuosity": "raw_tortuosity (distance / straight-line distance)",
+        "density_ratio": "density_ratio (vehicles / road_capacity)",
+    }
+
+    def __init__(self, artifact_path, ranges_path):
+        with open(ranges_path) as f:
+            self.ranges = json.load(f)
         bundle = joblib.load(artifact_path)
         self.model = bundle["model"]
         self.features = bundle["features"]
@@ -62,6 +72,7 @@ class TrafficInferenceService:
         # Same feature path as training: raw dtypes -> feature_pipeline -> saved categories
         row = pd.DataFrame([{c: record[c] for c in self.raw_inputs}]).astype(self.raw_dtypes)
         row = apply_categories(engineer_features(row), self.categories)
+        self._check_ranges(row)
 
         pred_time = float(self.model.predict(row[self.features])[0])
         if self.target_transform == "log1p":
@@ -74,6 +85,24 @@ class TrafficInferenceService:
             "derived_congestion_ratio": round(inferred_congestion_ratio, 2),
             "congestion_severity": "Severe" if inferred_congestion_ratio > 1.6 else ("Moderate" if inferred_congestion_ratio > 1.25 else "Low")
         }
+
+    def _check_ranges(self, row):
+        failed = input_range_violations(row, self.ranges).iloc[0]
+        values = {"distance": row["distance"].iloc[0], "haversine_dist": row["haversine_dist"].iloc[0],
+                  "raw_tortuosity": raw_tortuosity(row).iloc[0]}
+        if "density_ratio" in row.columns:
+            values["density_ratio"] = row["density_ratio"].iloc[0]
+        messages = []
+        if failed["distance_below_haversine"]:
+            messages.append(f"distance ({values['distance']:.3f} km) is shorter than the straight-line distance "
+                            f"between the coordinates ({values['haversine_dist']:.3f} km)")
+        for field, value in values.items():
+            if failed[field]:
+                r = self.ranges[field]
+                messages.append(f"{self.FIELD_LABELS[field]} = {value:.5f} is outside the allowed range "
+                                f"[{r['p1']:.5f}, {r['p99']:.5f}] (training p1-p99)")
+        if messages:
+            raise ValueError("; ".join(messages))
 
 if __name__ == "__main__":
     run_diagnostics()

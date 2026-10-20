@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import joblib
 import numpy as np
@@ -5,6 +6,7 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 
+from feature_pipeline import raw_tortuosity
 from train_final import FORECAST_PATH, NOWCAST_PATH, TARGET, load_split
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -12,6 +14,7 @@ REPORT_DIR = ROOT / "reports"
 METRICS_PATH = REPORT_DIR / "phase2_final_metrics.csv"
 SLICES_PATH = REPORT_DIR / "phase2_slices.csv"
 IMPORTANCE_PATH = REPORT_DIR / "feature_importance_ranking.csv"
+INPUT_RANGES_PATH = REPORT_DIR / "input_ranges.json"
 
 LINEAR_BASELINE_FEATURES = ["distance", "hour", "is_peak"]
 
@@ -67,7 +70,15 @@ def run_final_report():
         .assign(gain_share=lambda d: d["importance_gain"] / d["importance_gain"].sum())
         for name, b in bundles.items()])
 
+    # Inference accepts only inputs inside the p1-p99 range of the training rows
+    range_values = {"distance": train["distance"], "haversine_dist": train["haversine_dist"],
+                    "raw_tortuosity": raw_tortuosity(train), "density_ratio": train["density_ratio"]}
+    input_ranges = {field: {"p1": float(v.quantile(0.01)), "p99": float(v.quantile(0.99))}
+                    for field, v in range_values.items()}
+
     REPORT_DIR.mkdir(exist_ok=True)
+    with open(INPUT_RANGES_PATH, "w") as f:
+        json.dump(input_ranges, f, indent=2)
     metrics.to_csv(METRICS_PATH, index=False)
     slices.to_csv(SLICES_PATH, index=False)
     importance.to_csv(IMPORTANCE_PATH, index=False)
@@ -79,6 +90,8 @@ def run_final_report():
         print(slices.to_string(index=False, float_format=lambda v: f"{v:.4f}"))
         print(f"\n===== {IMPORTANCE_PATH.relative_to(ROOT)} =====")
         print(importance.to_string(index=False, float_format=lambda v: f"{v:.4g}"))
+        print(f"\n===== {INPUT_RANGES_PATH.relative_to(ROOT)} =====")
+        print(json.dumps(input_ranges, indent=2))
 
 
 if __name__ == "__main__":

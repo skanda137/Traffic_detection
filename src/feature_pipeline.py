@@ -73,6 +73,21 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
+def raw_tortuosity(df: pd.DataFrame) -> pd.Series:
+    """Unclipped route distance / straight-line distance."""
+    return df["distance"] / df["haversine_dist"]
+
+def input_range_violations(df: pd.DataFrame, ranges: dict) -> pd.DataFrame:
+    """One boolean column per check on featured rows; True where the row fails it.
+    ranges: {field: {"p1": .., "p99": ..}} from training rows (reports/input_ranges.json)."""
+    checks = {"distance_below_haversine": df["distance"] < df["haversine_dist"]}
+    values = {"distance": df["distance"], "haversine_dist": df["haversine_dist"], "raw_tortuosity": raw_tortuosity(df)}
+    if "density_ratio" in df.columns:
+        values["density_ratio"] = df["density_ratio"]
+    for field, v in values.items():
+        checks[field] = (v < ranges[field]["p1"]) | (v > ranges[field]["p99"])
+    return pd.DataFrame(checks)
+
 def apply_categories(df: pd.DataFrame, categories: dict) -> pd.DataFrame:
     """Recode categorical columns to the category lists saved at training time; unknown values raise."""
     df = df.copy()
