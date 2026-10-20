@@ -68,6 +68,7 @@ def render_forecast(service, record, quantiles):
     worst = sweep.loc[sweep["minutes"].idxmax()]
     best_hour, worst_hour = int(best["hour"]), int(worst["hour"])
 
+    st.session_state["headline_minutes"] = minutes  # exact value, read by AppTest
     st.metric(f"Predicted travel time at {hour:02d}:00", f"{minutes:.1f} min")
     show_interval(minutes, quantiles)
     c1, c2, c3 = st.columns(3)
@@ -97,6 +98,7 @@ def render_forecast(service, record, quantiles):
 
 def render_nowcast(service, record, quantiles):
     minutes = predict_or_stop(service, record)
+    st.session_state["headline_minutes"] = minutes  # exact value, read by AppTest
     st.metric(f"Predicted travel time at {record['hour']:02d}:00", f"{minutes:.1f} min")
     show_interval(minutes, quantiles)
 
@@ -119,6 +121,7 @@ def render_nowcast(service, record, quantiles):
     st.altair_chart(line + current, width="stretch")
 
 
+st.session_state.pop("headline_minutes", None)  # never carry a headline over from a previous run
 st.title("Travel Time Predictor")
 mode = st.radio("Mode", list(MODES), horizontal=True)
 model_path, model_name, mode_label = MODES[mode]
