@@ -158,6 +158,11 @@ if missing:
     st.stop()
 record = {**inputs, "day_of_week": day, "hour": hour, "weather": weather}
 
+with st.expander("Model card"):
+    st.dataframe(pd.read_csv(METRICS_PATH).set_index("model").round(4))
+    st.write("Split: random held-out split; dataset has no timestamp.")
+    st.write("Predictions reflect the training dataset, not live traffic.")
+
 if mode == "Forecast":
     render_forecast(service, record, quantiles)
 else:
