@@ -69,9 +69,7 @@ class TrafficInferenceService:
         if missing or unexpected:
             raise ValueError(f"Record inputs mismatch: missing {missing}, unexpected {unexpected}; expected {self.raw_inputs}")
 
-        # Same feature path as training: raw dtypes -> feature_pipeline -> saved categories
-        row = pd.DataFrame([{c: record[c] for c in self.raw_inputs}]).astype(self.raw_dtypes)
-        row = apply_categories(engineer_features(row), self.categories)
+        row = self.featurize(pd.DataFrame([{c: record[c] for c in self.raw_inputs}]))
         self._check_ranges(row)
 
         pred_time = float(self.model.predict(row[self.features])[0])
@@ -85,6 +83,48 @@ class TrafficInferenceService:
             "derived_congestion_ratio": round(inferred_congestion_ratio, 2),
             "congestion_severity": "Severe" if inferred_congestion_ratio > 1.6 else ("Moderate" if inferred_congestion_ratio > 1.25 else "Low")
         }
+
+    def featurize(self, records: pd.DataFrame) -> pd.DataFrame:
+        """Same feature path as training: raw dtypes -> feature_pipeline -> saved categories. No range checks."""
+        missing = [c for c in self.raw_inputs if c not in records.columns]
+        unexpected = [c for c in records.columns if c not in self.raw_inputs]
+        if missing or unexpected:
+            raise ValueError(f"Record inputs mismatch: missing {missing}, unexpected {unexpected}; expected {self.raw_inputs}")
+        return apply_categories(engineer_features(records[self.raw_inputs].astype(self.raw_dtypes)), self.categories)
+
+    def predict_many(self, records: pd.DataFrame) -> pd.Series:
+        """Predicted minutes per row (index preserved). Any invalid row raises ValueError naming its index."""
+        if records.empty:
+            raise ValueError("predict_many needs at least one row")
+        if not records.index.is_unique:
+            raise ValueError("predict_many needs a unique row index")
+        missing = [c for c in self.raw_inputs if c not in records.columns]
+        unexpected = [c for c in records.columns if c not in self.raw_inputs]
+        if missing or unexpected:
+            raise ValueError(f"Record inputs mismatch: missing {missing}, unexpected {unexpected}; expected {self.raw_inputs}")
+        try:
+            featured = self.featurize(records)
+            invalid = input_range_violations(featured, self.ranges).any(axis=1).any()
+        except ValueError:
+            invalid = True
+        if invalid:
+            raise ValueError(self._row_errors(records))
+        preds = self.model.predict(featured[self.features])
+        if self.target_transform == "log1p":
+            preds = np.expm1(preds)
+        return pd.Series(preds, index=records.index, name="predicted_travel_time_minutes")
+
+    def _row_errors(self, records):
+        """Re-run each row through predict() to name exactly which rows are invalid and why."""
+        messages = []
+        for i, rec in zip(records.index, records[self.raw_inputs].to_dict("records")):
+            try:
+                self.predict(rec)
+            except ValueError as e:
+                messages.append(f"row {i!r}: {e}")
+        if not messages:
+            raise RuntimeError("Batch failed validation but every row passed individually")
+        return "; ".join(messages)
 
     def _check_ranges(self, row):
         failed = input_range_violations(row, self.ranges).iloc[0]
