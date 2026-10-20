@@ -1,2 +1,6 @@
 __pycache__/
 models/*.pkl
+*.pkl
+model_ready_traffic.csv
+model_cleaned_traffic.parquet
+model_featured_traffic.parquet

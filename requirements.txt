@@ -1,0 +1,13 @@
+pandas==3.0.6
+numpy==2.5.4
+lightgbm==4.7.0
+scikit-learn==1.9.1
+joblib==1.6.0
+pyarrow==26.0.0
+streamlit==1.66.0
+# Imported by Phase 1 scripts under src/ but NOT installed in the environment these pins came from,
+# so no version can be pinned; install manually to run those scripts:
+#   xgboost      (src/model_comparison.py)
+#   optuna       (src/model_comparison.py)
+#   shap         (src/explainability.py)
+#   matplotlib   (src/explainability.py)
