@@ -1,23 +1,27 @@
 # Traffic Detection
 
-Travel-time prediction for city routes (Phase 2, the result) plus a congestion-ratio pipeline prototype on synthetic data (Phase 1, method only).
+Travel-time prediction for city routes (Phase 2, the result) plus a congestion-ratio pipeline prototype (Phase 1: synopsis design, implemented on synthetic data; method only).
 
-DATASET PROVENANCE: <Member A to fill>
+See docs/provenance.txt
+
+What the synopsis promised versus what was built: [docs/synopsis_vs_built.md](docs/synopsis_vs_built.md). Every number for slides is in [reports/slide_numbers.md](reports/slide_numbers.md), generated from `reports/`; this README deliberately quotes no metric values.
 
 ## Run (Phase 2), from the repository root, in order
 
 ```
 pip install -r requirements.txt
-python src/leakage_and_audit.py      # model_ready_traffic.csv -> model_cleaned_traffic.parquet
-python src/train_final.py            # trains NOWCAST + FORECAST -> models/nowcast_model.pkl, models/forecast_model.pkl
-python src/final_report.py           # test set -> reports/phase2_final_metrics.csv, phase2_slices.csv, feature_importance_ranking.csv,
-                                     #             phase2_error_quantiles.csv, input_ranges.json, example_routes.csv
-streamlit run dashboard/app.py       # dashboard
+python src/leakage_and_audit.py                     # model_ready_traffic.csv (current dir) -> model_cleaned_traffic.parquet
+python src/train_final.py                           # NOWCAST + FORECAST -> models/nowcast_model.pkl, models/forecast_model.pkl
+python src/final_report.py                          # test-set metrics, slices, importance, error quantiles, input ranges, example routes -> reports/
+python src/data_audit.py <path/to/model_ready_traffic.csv>   # measured dataset facts -> reports/data_audit.md
+python src/ablation_and_seeds.py                    # ablation over split seeds -> reports/ablation_and_seeds.csv
+python src/slide_numbers.py                         # reports/slide_numbers.md (needs the two steps above)
+streamlit run dashboard/app.py                      # dashboard
 ```
 
 `leakage_and_audit.py` uses paths relative to the current directory, so run it from the repository root.
 
-`model_cleaned_traffic.parquet` must be in the repository root for `src/train_final.py` and `src/final_report.py` (both read it through `train_final.load_split()`, path anchored to the repository root). `src/feature_pipeline.py`, when run directly, reads it from the current directory. `src/leakage_and_audit.py` writes it.
+`model_cleaned_traffic.parquet` must be in the repository root for `src/train_final.py`, `src/final_report.py` and `src/ablation_and_seeds.py` (all read it through `train_final.load_split()`, path anchored to the repository root). `src/feature_pipeline.py`, when run directly, reads it from the current directory. `src/leakage_and_audit.py` writes it.
 
 ## Dashboard
 
@@ -41,13 +45,18 @@ All four `reports/` files are written by `src/final_report.py`.
 | File | What it does |
 |---|---|
 | `src/leakage_and_audit.py` | Loads `model_ready_traffic.csv`, maps day names to 0-6 (Monday=0), drops `speed` (target leakage), filters out-of-range rows, writes `model_cleaned_traffic.parquet`. |
-| `src/feature_pipeline.py` | The single feature path for training and inference: spatial features, traffic ratios (only when vehicles/road_capacity/signal_time are given), `is_peak`/`is_weekend` derived from hour/day, hour encoding, and `apply_categories` (raises on unknown categories). Run directly, it writes `model_featured_traffic.parquet`. |
-| `src/train_final.py` | Random 70/15/15 split, trains NOWCAST and FORECAST LightGBM models with the v1 hyperparameters, early stopping on val only, saves bundles to `models/`. |
-| `src/final_report.py` | The only test-set evaluation: baselines, both models, slices, gain importance, error quantiles; also writes the input ranges (from training rows) and the dashboard's example routes. |
-| `src/evaluate_and_explain.py` | `TrafficInferenceService` (bundle path -> feature_pipeline -> saved categories -> prediction), used by the dashboard. Its `run_diagnostics()` still scores the older `traffic_model_final.pkl` (v2). |
+| `src/feature_pipeline.py` | The single feature path for training and inference: spatial features, traffic ratios (only when vehicles/road_capacity/signal_time are given), `is_peak`/`is_weekend` derived from hour/day, hour encoding, `apply_categories` (raises on unknown categories) and the input range checks. Run directly, it writes `model_featured_traffic.parquet`. |
+| `src/train_final.py` | Random 70/15/15 split (`load_split(seed=42)`), trains NOWCAST and FORECAST LightGBM models with the v1 hyperparameters, early stopping on val only, saves bundles to `models/`. |
+| `src/final_report.py` | The only test-set evaluation of the shipped models: baselines, both models, slices, gain importance, error quantiles; also writes the input ranges (from training rows) and the dashboard's example routes. |
+| `src/evaluate_and_explain.py` | `TrafficInferenceService`: `predict` (one record) and `predict_many` (a DataFrame), both via `feature_pipeline`, saved categories and the input range checks. Its `run_diagnostics()` still scores the older `traffic_model_final.pkl` (v2). |
+| `src/data_audit.py` | Measured facts about the raw CSV (shape, date/time columns, route pairs, tortuosity, pace by hour, weather means, target structure) -> `reports/data_audit.md`. Makes no claim about the data source. |
+| `src/ablation_and_seeds.py` | Reporting only: NOWCAST, FORECAST and an 18-feature ablation on several split seeds vs baseline (a) -> `reports/ablation_and_seeds.csv`. |
+| `src/slide_numbers.py` | Builds `reports/slide_numbers.md` from `reports/*.csv`. |
 | `dashboard/app.py` | Streamlit app; see [Dashboard](#dashboard). |
+| `docs/provenance.txt` | Dataset provenance (to be filled in by Member A). |
+| `docs/synopsis_vs_built.md` | Synopsis item -> what was built -> status. |
 | `src/train_prediction.py`, `src/train_prediction_v2.py` | Earlier v1/v2 experiments (weekday train, weekend holdout); both write `traffic_model_final.pkl`. Superseded by `train_final.py`. |
-| `synthetic_data.py` | Phase 1: generates `synthetic_traffic_dataset.csv`. |
+| `synthetic_data.py` | Phase 1 (synopsis design, implemented on synthetic data): generates `synthetic_traffic_dataset.csv`. |
 | `src/data_validator.py` | Phase 1: schema and bounds checks for the synthetic congestion data. |
 | `src/model_comparison.py` | Phase 1: tuned LightGBM vs XGBoost vs historical-average baselines on synthetic data; writes `models/best_congestion_model.pkl` and `reports/holdout_metrics.csv`, `model_selection.json`, `feature_importance.csv`. |
 | `src/error_diagnostics.py` | Phase 1: error slices for the Phase 1 model. |
@@ -59,19 +68,19 @@ Phase 1 commands: `python synthetic_data.py`, `python src/model_comparison.py`, 
 
 ## Models
 
-- **NOWCAST**: all 21 v1 features, including live traffic inputs (vehicles, road_capacity, signal_time and the ratios built from them). Use when current traffic counts are known.
-- **FORECAST**: 15 features: route geometry, hour, is_peak, day, weather. No live traffic inputs, so it can be used ahead of time.
+- **NOWCAST**: all v1 features, including live traffic inputs (vehicles, road_capacity, signal_time and the ratios built from them). Use when current traffic counts are known.
+- **FORECAST**: route geometry, hour, is_peak, day and weather only. No live traffic inputs, so it can be used ahead of time.
 
-Both use a linear target (no log transform). v1-style training was kept over v2 because v2's log target biased predictions by -0.97 min on average (v1: -0.04 min).
+Both use a linear target (no log transform). The earlier v2 experiment (`src/train_prediction_v2.py`) used a log target, which biased its predictions downward on average; v1-style training was kept.
 
 ## Leakage finding
 
-`speed` is dropped in cleaning because `travel_time` is almost exactly `58 * distance / speed` (R² 0.99 on 100K rows). The remaining traffic features still carry much of that signal: `vehicles / road_capacity` correlates -0.83 with `speed`. That is why NOWCAST (needs live counts) and FORECAST (does not) are reported separately.
+`speed` is dropped in cleaning because `travel_time` is almost a deterministic function of `distance / speed`, and the remaining traffic ratio `vehicles / road_capacity` is strongly correlated with `speed`; both measurements are in `reports/data_audit.md`. That is why NOWCAST (needs live counts) and FORECAST (does not) are reported separately.
 
 ## Limitations
 
-- **No timestamp column.** The data has only `day_of_week` and `hour`. The split is random 70/15/15 (seed 42), not temporal. A weekday-train/weekend-test split scored within 0.5% of a random split, so it gave no extra out-of-time evidence.
+- **Random split, no timestamp.** The data has only `day_of_week` and `hour`, no date or timestamp column (see `reports/data_audit.md`), so the 70/15/15 split is random, not temporal. There is no out-of-time evidence.
+- **Distance equals straight-line distance.** In this dataset `distance` is effectively the straight-line distance between the coordinates (raw tortuosity percentiles in `reports/data_audit.md`), so tortuosity is effectively constant, `distance` and `haversine_dist` are the same signal, and custom coordinates only accept straight-line distances.
 - **Nowcast vs forecast.** NOWCAST's accuracy depends on live traffic counts that are only available at trip time; FORECAST is the honest ahead-of-time number.
 - The dashboard's 80% interval is empirical and marginal over the whole test set; it is not a per-input confidence interval.
-- In this dataset distance equals straight-line distance (raw tortuosity p1-p99 1.00037-1.00088), so tortuosity is effectively constant, distance and haversine_dist are the same signal, and custom coordinates only accept straight-line distances.
-- Phase 1 data is synthetic (`synthetic_data.py`); its results demonstrate the pipeline and method, not real-world accuracy.
+- **Phase 1 is synthetic.** Phase 1 data comes from `synthetic_data.py`; its results demonstrate the pipeline and method, not real-world accuracy.
