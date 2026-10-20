@@ -25,20 +25,22 @@ streamlit run dashboard/app.py                      # dashboard
 
 ## Dashboard
 
-`streamlit run dashboard/app.py`. At runtime it reads only these files (no parquet, no raw data):
+`streamlit run dashboard/app.py` (settings in `.streamlit/config.toml`: usage stats off, minimal toolbar). At runtime it reads only these files (no parquet, no raw data):
 
 - `models/forecast_model.pkl`, `models/nowcast_model.pkl` (via `TrafficInferenceService`)
 - `reports/input_ranges.json` (via `TrafficInferenceService`)
-- `reports/example_routes.csv`, `reports/phase2_error_quantiles.csv`, `reports/phase2_final_metrics.csv`
+- `reports/example_routes.csv`, `reports/phase2_error_quantiles.csv`, `reports/phase2_final_metrics.csv` (written by `src/final_report.py`)
+- `reports/data_audit.md` (written by `src/data_audit.py`)
+- `docs/provenance.txt`, `docs/synopsis_vs_built.md`
 
-All four `reports/` files are written by `src/final_report.py`.
+Layout: a header with the persistent caption "Predictions reflect the supplied dataset, not live traffic."; a sidebar with the route (example routes from the test set, stratified by distance quintile, plus a custom-coordinates expander), day, hour and weather; and three tabs.
 
-- **Forecast** (default, listed first): route, day, hour, weather. Shows predicted minutes at the chosen hour, the best window and worst window (hours within 3% of the 24-hour minimum / maximum, shown as ranges that can wrap past midnight), minutes saved versus the minimum, a 24-hour bar chart with the best window and chosen hour highlighted, and the same route and hour under each weather.
-- **Nowcast**: adds vehicles, road capacity and signal time (defaulting to the selected route's row values). Needs live vehicle counts from a sensor feed. Shows predicted minutes and a chart of predicted minutes vs vehicles across the training density_ratio p1-p99 range, with the current input marked.
-- **Route selector**: 12 example routes from the test set, stratified by distance quintile; custom coordinates are in an expander.
+- **Plan ahead** (Forecast, first tab): metric cards for predicted minutes at the chosen hour with its empirical 80% range, the best window with its minutes, and minutes saved versus the chosen hour; the best and worst windows (hours within 3% of the 24-hour minimum / maximum, shown as ranges that can wrap past midnight); a 24-hour bar chart; a 24-hour x weather heatmap for the chosen day with the chosen cell outlined (one batch prediction feeds both charts); and a day-of-week caption computed from the predictions for all seven days.
+- **Live traffic** (Nowcast): vehicles, road capacity and signal time (defaulting to the selected route's row values); predicted minutes with the 80% range; the live vs forecast difference; the current density_ratio against the training p1-p99; and predicted minutes vs vehicles across that density range with the current input marked.
+- **About**: test metrics with % improvement over baseline (a) computed from `reports/phase2_final_metrics.csv`, the split description, the provenance (shown as an error while it is still a placeholder), the synopsis-vs-built table, the data audit and the limitations.
+- Colours: best window green, chosen hour / current input blue, worst window orange, in every chart.
 - **Interval**: "80% of test-set trips fell within [pred × q10, pred × q90]", from the empirical q10/q90 of actual/predicted on the test set (marginal over the test set, not specific to the input).
 - **Input validation**: the dashboard and `TrafficInferenceService` reject distance, straight-line distance, raw tortuosity and density_ratio outside the training p1-p99 range, and any route whose distance is shorter than the straight-line distance between its coordinates. The dashboard shows an error and no prediction.
-- **Model card** expander: baselines vs NOWCAST vs FORECAST test metrics, the split ("random held-out split; dataset has no timestamp"), and "Predictions reflect the training dataset, not live traffic."
 
 ## Files
 

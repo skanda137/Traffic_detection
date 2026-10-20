@@ -60,6 +60,7 @@ class TrafficInferenceService:
         self.raw_dtypes = bundle["raw_dtypes"]
         self.categories = bundle["categories"]
         self.target_transform = bundle["target_transform"]
+        self.split_description = bundle["split_description"]
         if self.target_transform not in ("none", "log1p"):
             raise ValueError(f"Unsupported target_transform {self.target_transform!r}")
 

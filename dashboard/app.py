@@ -1,5 +1,6 @@
 import math
 import sys
+import time
 from pathlib import Path
 
 import altair as alt
@@ -11,53 +12,64 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 from evaluate_and_explain import TrafficInferenceService  # noqa: E402
 
-MODES = {
-    "Forecast": (ROOT / "models" / "forecast_model.pkl", "FORECAST",
-                 "Forecast: uses only route, day, hour and weather (no live traffic inputs)"),
-    "Nowcast": (ROOT / "models" / "nowcast_model.pkl", "NOWCAST",
-                "Needs live vehicle counts from a sensor feed."),
-}
+MODEL_PATHS = {"FORECAST": ROOT / "models" / "forecast_model.pkl", "NOWCAST": ROOT / "models" / "nowcast_model.pkl"}
 METRICS_PATH = ROOT / "reports" / "phase2_final_metrics.csv"
 QUANTILES_PATH = ROOT / "reports" / "phase2_error_quantiles.csv"
 RANGES_PATH = ROOT / "reports" / "input_ranges.json"
 ROUTES_PATH = ROOT / "reports" / "example_routes.csv"
+AUDIT_PATH = ROOT / "reports" / "data_audit.md"
+PROVENANCE_PATH = ROOT / "docs" / "provenance.txt"
+SYNOPSIS_PATH = ROOT / "docs" / "synopsis_vs_built.md"
+PROVENANCE_PLACEHOLDER = "<Member A to fill>"
+BASELINE_A = "baseline (a) per-hour median pace x distance"
 ROUTE_FIELDS = ["lat_src", "lon_src", "lat_dest", "lon_dest", "distance"]
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-HOUR_COLORS = {"Other hours": "#9aa5b1", "Best window": "#2ca02c", "Chosen hour": "#1f77b4",
-               "Chosen hour (in best window)": "#9467bd"}
+# Same meaning, same colour in every chart
+BEST, CHOSEN, WORST, OTHER = "#2ca02c", "#1f77b4", "#ff7f0e", "#9aa5b1"
+HOUR_COLORS = {"Best window": BEST, "Chosen hour": CHOSEN, "Worst window": WORST, "Other hours": OTHER}
 WINDOW_TOLERANCE = 0.03  # hours within 3% of the minimum (maximum) form the best (worst) window
+DAY_EFFECT_TOLERANCE = 0.03
 VEHICLE_POINTS = 40
+LIMITATIONS = [
+    "Random train/val/test split: the dataset has no timestamp, so there is no out-of-time evidence.",
+    "Distance equals straight-line distance in this dataset, so custom coordinates only accept straight-line distances.",
+    "Live traffic (Nowcast) needs live vehicle counts; Plan ahead (Forecast) is the ahead-of-time estimate.",
+    "The 80% range is empirical and marginal over the whole test set, not a per-input confidence interval.",
+    "Phase 1 (congestion ratio) is synopsis design, implemented on synthetic data.",
+]
+
+st.set_page_config(page_title="Travel Time Predictor", layout="wide")
 
 
 @st.cache_resource
-def load_service(path):
-    return TrafficInferenceService(path, RANGES_PATH)
+def load_service(model_name):
+    return TrafficInferenceService(MODEL_PATHS[model_name], RANGES_PATH)
 
 
 @st.cache_data
-def load_error_quantiles(model_name):
-    q = pd.read_csv(QUANTILES_PATH).set_index("model").loc[model_name]
+def cached_predict_many(model_name, columns, rows):
+    """columns/rows are tuples so the call is hashable. ValueError on invalid input is raised, never cached."""
+    return load_service(model_name).predict_many(pd.DataFrame(list(rows), columns=list(columns))).tolist()
+
+
+def predict_frame(model_name, frame):
+    rows = tuple(tuple(r) for r in frame.itertuples(index=False))
+    return np.asarray(cached_predict_many(model_name, tuple(frame.columns), rows))
+
+
+@st.cache_data
+def read_csv(path):
+    return pd.read_csv(path)
+
+
+@st.cache_data
+def read_text(path):
+    return Path(path).read_text(encoding="utf-8")
+
+
+def error_quantiles(model_name):
+    q = read_csv(QUANTILES_PATH).set_index("model").loc[model_name]
     return float(q["q10_actual_over_predicted"]), float(q["q90_actual_over_predicted"])
-
-
-@st.cache_data
-def load_routes():
-    return pd.read_csv(ROUTES_PATH).set_index("label")
-
-
-def predict_or_stop(service, record):
-    """Invalid input -> st.error and no prediction."""
-    try:
-        return service.predict(record)["predicted_travel_time_minutes"]
-    except ValueError as e:
-        st.error(f"Invalid input: {e}")
-        st.stop()
-
-
-def show_interval(minutes, quantiles):
-    q10, q90 = quantiles
-    st.write(f"80% of test-set trips fell within [{minutes * q10:.1f}, {minutes * q90:.1f}] min "
-             f"(prediction × {q10:.3f} to × {q90:.3f}; empirical, marginal over the test set).")
 
 
 def format_hour_window(hours):
@@ -74,28 +86,42 @@ def format_hour_window(hours):
     return ", ".join(f"{s:02d}:00" if s == e else f"{s:02d}:00-{e:02d}:00" for _, s, e in sorted(runs))
 
 
-def render_forecast(service, record, quantiles):
-    hour = record["hour"]
-    minutes = predict_or_stop(service, record)
-    sweep = pd.DataFrame({"hour": range(24),
-                          "minutes": [predict_or_stop(service, {**record, "hour": h}) for h in range(24)]})
+def range_caption(minutes, model_name):
+    q10, q90 = error_quantiles(model_name)
+    return f"80% of test-set trips fell within [{minutes * q10:.1f}, {minutes * q90:.1f}] min"
+
+
+def render_plan(record):
+    service = load_service("FORECAST")
+    hour, weather = record["hour"], record["weather"]
+    minutes = service.predict(record)["predicted_travel_time_minutes"]  # raises ValueError on invalid input
+    st.session_state["headline_minutes"] = minutes  # exact value, read by AppTest
+
+    # One batch call: 24 hours x every weather; the chosen weather's 24 rows also feed the bar chart
+    grid = pd.DataFrame([{**record, "hour": h, "weather": w} for w in service.categories["weather"] for h in range(24)])
+    grid["minutes"] = predict_frame("FORECAST", grid[service.raw_inputs])
+    sweep = grid.loc[grid["weather"] == weather, ["hour", "minutes"]].reset_index(drop=True)
     low, high = sweep["minutes"].min(), sweep["minutes"].max()
     best_hours = sweep.loc[sweep["minutes"] <= low * (1 + WINDOW_TOLERANCE), "hour"].tolist()
     worst_hours = sweep.loc[sweep["minutes"] >= high * (1 - WINDOW_TOLERANCE), "hour"].tolist()
 
-    st.session_state["headline_minutes"] = minutes  # exact value, read by AppTest
-    st.metric(f"Predicted travel time at {hour:02d}:00", f"{minutes:.1f} min")
-    show_interval(minutes, quantiles)
+    c1, c2, c3 = st.columns(3)
+    c1.metric(f"Predicted at {hour:02d}:00", f"{minutes:.1f} min")
+    c1.caption(range_caption(minutes, "FORECAST"))
+    c2.metric("Best window", f"{low:.1f} min")
+    c2.caption(format_hour_window(best_hours))
+    c3.metric("Minutes saved vs the chosen hour", f"{minutes - low:.1f} min")
+    c3.caption("by leaving in the best window instead")
+
     st.markdown(f"**Best window:** {format_hour_window(best_hours)} (minimum {low:.1f} min)  \n"
                 f"**Worst window:** {format_hour_window(worst_hours)} (maximum {high:.1f} min)")
-    st.metric("Minutes saved vs the minimum", f"{minutes - low:.1f} min")
     st.caption("Hours within 3% of the minimum are treated as equivalent.")
 
     sweep["highlight"] = "Other hours"
+    sweep.loc[sweep["hour"].isin(worst_hours), "highlight"] = "Worst window"
     sweep.loc[sweep["hour"].isin(best_hours), "highlight"] = "Best window"
-    sweep.loc[sweep["hour"] == hour, "highlight"] = ("Chosen hour (in best window)" if hour in best_hours
-                                                     else "Chosen hour")
-    st.subheader("Predicted travel time by departure hour")
+    sweep.loc[sweep["hour"] == hour, "highlight"] = "Chosen hour"
+    st.subheader("Predicted minutes by departure hour")
     st.altair_chart(alt.Chart(sweep).mark_bar().encode(
         x=alt.X("hour:O", title="Hour"),
         y=alt.Y("minutes:Q", title="Predicted minutes"),
@@ -104,85 +130,155 @@ def render_forecast(service, record, quantiles):
         tooltip=["hour", alt.Tooltip("minutes:Q", format=".2f")],
     ), width="stretch")
 
-    st.subheader(f"Same route at {hour:02d}:00 by weather")
-    st.table(pd.DataFrame({
-        "weather": service.categories["weather"],
-        "predicted minutes": [round(predict_or_stop(service, {**record, "weather": w}), 2)
-                              for w in service.categories["weather"]],
-    }).set_index("weather"))
+    st.subheader(f"Hour x weather on {DAY_NAMES[record['day_of_week']]}")
+    cells = alt.Chart(grid[["hour", "weather", "minutes"]]).mark_rect().encode(
+        x=alt.X("hour:O", title="Hour"), y=alt.Y("weather:N", title=None),
+        color=alt.Color("minutes:Q", title="Predicted minutes", scale=alt.Scale(scheme="greys")),
+        tooltip=["hour", "weather", alt.Tooltip("minutes:Q", format=".2f")])
+    chosen = alt.Chart(pd.DataFrame({"hour": [hour], "weather": [weather]})).mark_rect(
+        fill=None, stroke=CHOSEN, strokeWidth=3).encode(x="hour:O", y="weather:N")
+    st.altair_chart(cells + chosen, width="stretch")
+
+    days = pd.DataFrame([{**record, "day_of_week": d} for d in service.categories["day_of_week"]])
+    by_day = predict_frame("FORECAST", days[service.raw_inputs])
+    spread = (by_day.max() - by_day.min()) / by_day.min()
+    if spread < DAY_EFFECT_TOLERANCE:
+        st.caption("Day of week changes the prediction by under 3% on this dataset")
+    else:
+        st.caption(f"Day of week changes the prediction by {spread:.1%} at {hour:02d}:00 in {weather} weather "
+                   f"({by_day.min():.1f}-{by_day.max():.1f} min)")
+    return minutes
 
 
-def render_nowcast(service, record, quantiles):
-    minutes = predict_or_stop(service, record)
-    st.session_state["headline_minutes"] = minutes  # exact value, read by AppTest
-    st.metric(f"Predicted travel time at {record['hour']:02d}:00", f"{minutes:.1f} min")
-    show_interval(minutes, quantiles)
+def render_live(record, route, route_label, forecast_minutes):
+    service = load_service("NOWCAST")
+    c1, c2, c3 = st.columns(3)
+    # Defaults are the selected route's own row values; keyed per route so they reset when the route changes
+    traffic = {
+        "vehicles": c1.number_input("Vehicles on route", min_value=0, value=int(route["vehicles"]), step=10,
+                                    key=f"vehicles_{route_label}"),
+        "road_capacity": c2.number_input("Road capacity", min_value=0, value=int(route["road_capacity"]), step=50,
+                                         key=f"road_capacity_{route_label}"),
+        "signal_time": c3.number_input("Signal time", min_value=0, value=int(route["signal_time"]), step=10,
+                                       key=f"signal_time_{route_label}"),
+    }
+    live = {**record, **traffic}
+    try:
+        minutes = service.predict(live)["predicted_travel_time_minutes"]
+    except ValueError as e:
+        st.error(f"Invalid input: {e}")
+        return
+    st.session_state["live_minutes"] = minutes  # exact value, read by AppTest
 
-    # Vehicle counts spanning the training density_ratio p1-p99 at this road capacity (same formula as feature_pipeline)
+    st.metric(f"Live estimate at {record['hour']:02d}:00", f"{minutes:.1f} min")
+    st.caption(range_caption(minutes, "NOWCAST"))
+    st.write(f"Forecast for the same route/hour says {forecast_minutes:.1f} min, live says {minutes:.1f} min "
+             f"(difference {minutes - forecast_minutes:+.1f} min)")
+
     density = service.ranges["density_ratio"]
-    capacity = max(record["road_capacity"], 10.0)
-    low, high = math.ceil(density["p1"] * capacity), math.floor(density["p99"] * capacity)
-    vehicles = sorted(set(np.linspace(low, high, VEHICLE_POINTS).round().astype(int).tolist()) | {record["vehicles"]})
-    sweep = pd.DataFrame({"vehicles": vehicles,
-                          "minutes": [predict_or_stop(service, {**record, "vehicles": v}) for v in vehicles]})
-    sweep["point"] = np.where(sweep["vehicles"] == record["vehicles"], "Current input", "Sweep")
+    current_density = float(service.featurize(pd.DataFrame([live]))["density_ratio"].iloc[0])
+    st.write(f"density_ratio (vehicles / road capacity) = {current_density:.3f}; "
+             f"training p1-p99: [{density['p1']:.3f}, {density['p99']:.3f}]")
 
-    st.subheader(f"Predicted travel time vs vehicles (road capacity {record['road_capacity']})")
-    line = alt.Chart(sweep).mark_line(color="#1f77b4").encode(
-        x=alt.X("vehicles:Q", title="Vehicles on route"),
-        y=alt.Y("minutes:Q", title="Predicted minutes"),
+    # Vehicle counts spanning the training density p1-p99, using feature_pipeline's density for one vehicle
+    per_vehicle = float(service.featurize(pd.DataFrame([{**live, "vehicles": 1}]))["density_ratio"].iloc[0])
+    low, high = math.ceil(density["p1"] / per_vehicle), math.floor(density["p99"] / per_vehicle)
+    vehicles = sorted(set(np.linspace(low, high, VEHICLE_POINTS).round().astype(int).tolist()) | {traffic["vehicles"]})
+    grid = pd.DataFrame([{**live, "vehicles": v} for v in vehicles])
+    sweep = pd.DataFrame({"vehicles": vehicles, "minutes": predict_frame("NOWCAST", grid[service.raw_inputs])})
+
+    st.subheader(f"Predicted minutes vs vehicles (road capacity {traffic['road_capacity']})")
+    line = alt.Chart(sweep).mark_line(color=OTHER).encode(
+        x=alt.X("vehicles:Q", title="Vehicles on route"), y=alt.Y("minutes:Q", title="Predicted minutes"),
         tooltip=["vehicles", alt.Tooltip("minutes:Q", format=".2f")])
-    current = alt.Chart(sweep[sweep["point"] == "Current input"]).mark_point(
-        color="#d62728", size=120, filled=True).encode(x="vehicles:Q", y="minutes:Q")
+    current = alt.Chart(sweep[sweep["vehicles"] == traffic["vehicles"]]).mark_point(
+        color=CHOSEN, size=140, filled=True).encode(x="vehicles:Q", y="minutes:Q")
     st.altair_chart(line + current, width="stretch")
 
 
-st.session_state.pop("headline_minutes", None)  # never carry a headline over from a previous run
-st.title("Travel Time Predictor")
-mode = st.radio("Mode", list(MODES), horizontal=True)
-model_path, model_name, mode_label = MODES[mode]
-service = load_service(str(model_path))
-quantiles = load_error_quantiles(model_name)
-st.caption(mode_label)
-
-routes = load_routes()
-route_label = st.selectbox("Route (example routes from the test set)", list(routes.index))
-route = routes.loc[route_label]
-with st.expander("Custom coordinates"):
-    use_custom = st.checkbox("Use custom coordinates instead of the example route")
-    col1, col2 = st.columns(2)
-    custom = {
-        "lat_src": col1.number_input("Source latitude", value=None, format="%.6f"),
-        "lon_src": col2.number_input("Source longitude", value=None, format="%.6f"),
-        "lat_dest": col1.number_input("Destination latitude", value=None, format="%.6f"),
-        "lon_dest": col2.number_input("Destination longitude", value=None, format="%.6f"),
-        "distance": st.number_input("Route distance (km)", value=None, step=0.5),
-    }
-inputs = custom if use_custom else {f: float(route[f]) for f in ROUTE_FIELDS}
-day = st.selectbox("Day", service.categories["day_of_week"], format_func=lambda d: DAY_NAMES[d])
-hour = st.slider("Hour", 0, 23, 8)
-weather = st.selectbox("Weather", service.categories["weather"])
-if mode == "Nowcast":
-    # Defaults are the selected route's own row values; keyed per route so they reset when the route changes
-    inputs["vehicles"] = st.number_input("Vehicles on route", min_value=0, value=int(route["vehicles"]),
-                                         step=10, key=f"vehicles_{route_label}")
-    inputs["road_capacity"] = st.number_input("Road capacity", min_value=0, value=int(route["road_capacity"]),
-                                              step=50, key=f"road_capacity_{route_label}")
-    inputs["signal_time"] = st.number_input("Signal time", min_value=0, value=int(route["signal_time"]),
-                                            step=10, key=f"signal_time_{route_label}")
-
-missing = [k for k, v in inputs.items() if v is None]
-if missing:
-    st.error(f"Missing input: {', '.join(missing)}")
-    st.stop()
-record = {**inputs, "day_of_week": day, "hour": hour, "weather": weather}
-
-with st.expander("Model card"):
-    st.dataframe(pd.read_csv(METRICS_PATH).set_index("model").round(4))
+def render_about():
+    metrics = read_csv(METRICS_PATH).set_index("model")
+    if BASELINE_A not in metrics.index:
+        raise ValueError(f"{BASELINE_A!r} missing from {METRICS_PATH.name}")
+    base = metrics.loc[BASELINE_A]
+    table = metrics[["rmse_min", "mae_min", "mae_over_mean_actual"]].copy()
+    table["rmse_improvement_vs_baseline_a_pct"] = 100 * (1 - metrics["rmse_min"] / base["rmse_min"])
+    table["mae_improvement_vs_baseline_a_pct"] = 100 * (1 - metrics["mae_min"] / base["mae_min"])
+    st.subheader("Test-set metrics")
+    st.dataframe(table.round(4))
     st.write("Split: random held-out split; dataset has no timestamp.")
-    st.write("Predictions reflect the training dataset, not live traffic.")
+    st.caption(f"Details: {load_service('FORECAST').split_description}")
 
-if mode == "Forecast":
-    render_forecast(service, record, quantiles)
-else:
-    render_nowcast(service, record, quantiles)
+    st.subheader("Dataset provenance")
+    provenance = read_text(PROVENANCE_PATH).strip()
+    if PROVENANCE_PLACEHOLDER in provenance:
+        st.error(provenance)
+    else:
+        st.info(provenance)
+
+    st.subheader("Synopsis vs what was built")
+    st.markdown(read_text(SYNOPSIS_PATH))
+    with st.expander("Data audit (reports/data_audit.md)"):
+        st.markdown(read_text(AUDIT_PATH))
+    st.subheader("Limitations")
+    st.markdown("\n".join(f"- {item}" for item in LIMITATIONS))
+
+
+st.session_state.pop("headline_minutes", None)  # never carry a value over from a previous run
+st.session_state.pop("live_minutes", None)
+st.title("Travel Time Predictor")
+st.write("Estimate trip minutes for a route by departure hour, ahead of time or from live traffic counts.")
+st.caption("Predictions reflect the supplied dataset, not live traffic.")
+
+forecast_service = load_service("FORECAST")
+routes = read_csv(ROUTES_PATH).set_index("label")
+with st.sidebar:
+    st.header("Trip")
+    route_label = st.selectbox("Route (example routes from the test set)", list(routes.index))
+    route = routes.loc[route_label]
+    with st.expander("Custom coordinates"):
+        use_custom = st.checkbox("Use custom coordinates instead of the example route")
+        custom = {
+            "lat_src": st.number_input("Source latitude", value=None, format="%.6f"),
+            "lon_src": st.number_input("Source longitude", value=None, format="%.6f"),
+            "lat_dest": st.number_input("Destination latitude", value=None, format="%.6f"),
+            "lon_dest": st.number_input("Destination longitude", value=None, format="%.6f"),
+            "distance": st.number_input("Route distance (km)", value=None, step=0.5),
+        }
+    day = st.selectbox("Day", forecast_service.categories["day_of_week"], format_func=lambda d: DAY_NAMES[d])
+    hour = st.slider("Hour", 0, 23, 8)
+    weather = st.selectbox("Weather", forecast_service.categories["weather"])
+
+inputs = custom if use_custom else {f: float(route[f]) for f in ROUTE_FIELDS}
+record = {**inputs, "day_of_week": day, "hour": hour, "weather": weather}
+missing = [k for k, v in inputs.items() if v is None]
+
+render_seconds = {}
+plan_tab, live_tab, about_tab = st.tabs(["Plan ahead", "Live traffic", "About"])
+with about_tab:
+    start = time.perf_counter()
+    render_about()
+    render_seconds["About"] = time.perf_counter() - start
+
+forecast_minutes, input_error = None, None
+with plan_tab:
+    start = time.perf_counter()
+    if missing:
+        input_error = f"Missing input: {', '.join(missing)}"
+    else:
+        try:
+            forecast_minutes = render_plan(record)
+        except ValueError as e:
+            input_error = f"Invalid input: {e}"
+    if input_error:
+        st.error(input_error)
+    render_seconds["Plan ahead"] = time.perf_counter() - start
+with live_tab:
+    start = time.perf_counter()
+    st.caption("Needs live vehicle counts from a sensor feed.")
+    if input_error:
+        st.error(input_error)
+    else:
+        render_live(record, route, route_label, forecast_minutes)
+    render_seconds["Live traffic"] = time.perf_counter() - start
+st.session_state["render_seconds"] = render_seconds  # read by AppTest
