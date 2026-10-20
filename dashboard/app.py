@@ -23,8 +23,9 @@ RANGES_PATH = ROOT / "reports" / "input_ranges.json"
 ROUTES_PATH = ROOT / "reports" / "example_routes.csv"
 ROUTE_FIELDS = ["lat_src", "lon_src", "lat_dest", "lon_dest", "distance"]
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-HOUR_COLORS = {"Other hours": "#9aa5b1", "Chosen hour": "#1f77b4", "Best hour": "#2ca02c",
-               "Chosen = best hour": "#9467bd"}
+HOUR_COLORS = {"Other hours": "#9aa5b1", "Best window": "#2ca02c", "Chosen hour": "#1f77b4",
+               "Chosen hour (in best window)": "#9467bd"}
+WINDOW_TOLERANCE = 0.03  # hours within 3% of the minimum (maximum) form the best (worst) window
 VEHICLE_POINTS = 40
 
 
@@ -59,26 +60,41 @@ def show_interval(minutes, quantiles):
              f"(prediction × {q10:.3f} to × {q90:.3f}; empirical, marginal over the test set).")
 
 
+def format_hour_window(hours):
+    """Hours (0-23) -> consecutive runs as "HH:00-HH:00", merging across midnight; wrapping run listed first."""
+    hours = set(hours)
+    if len(hours) == 24:
+        return "00:00-23:00"
+    runs = []
+    for start in sorted(h for h in hours if (h - 1) % 24 not in hours):
+        end = start
+        while (end + 1) % 24 in hours:
+            end = (end + 1) % 24
+        runs.append((start - 24 if end < start else start, start, end))
+    return ", ".join(f"{s:02d}:00" if s == e else f"{s:02d}:00-{e:02d}:00" for _, s, e in sorted(runs))
+
+
 def render_forecast(service, record, quantiles):
     hour = record["hour"]
     minutes = predict_or_stop(service, record)
     sweep = pd.DataFrame({"hour": range(24),
                           "minutes": [predict_or_stop(service, {**record, "hour": h}) for h in range(24)]})
-    best = sweep.loc[sweep["minutes"].idxmin()]
-    worst = sweep.loc[sweep["minutes"].idxmax()]
-    best_hour, worst_hour = int(best["hour"]), int(worst["hour"])
+    low, high = sweep["minutes"].min(), sweep["minutes"].max()
+    best_hours = sweep.loc[sweep["minutes"] <= low * (1 + WINDOW_TOLERANCE), "hour"].tolist()
+    worst_hours = sweep.loc[sweep["minutes"] >= high * (1 - WINDOW_TOLERANCE), "hour"].tolist()
 
     st.session_state["headline_minutes"] = minutes  # exact value, read by AppTest
     st.metric(f"Predicted travel time at {hour:02d}:00", f"{minutes:.1f} min")
     show_interval(minutes, quantiles)
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Best hour", f"{best_hour:02d}:00", f"{best['minutes']:.1f} min", delta_color="off")
-    c2.metric("Worst hour", f"{worst_hour:02d}:00", f"{worst['minutes']:.1f} min", delta_color="off")
-    c3.metric(f"Saved by leaving at {best_hour:02d}:00", f"{minutes - best['minutes']:.1f} min")
+    st.markdown(f"**Best window:** {format_hour_window(best_hours)} (minimum {low:.1f} min)  \n"
+                f"**Worst window:** {format_hour_window(worst_hours)} (maximum {high:.1f} min)")
+    st.metric("Minutes saved vs the minimum", f"{minutes - low:.1f} min")
+    st.caption("Hours within 3% of the minimum are treated as equivalent.")
 
     sweep["highlight"] = "Other hours"
-    sweep.loc[sweep["hour"] == hour, "highlight"] = "Chosen hour"
-    sweep.loc[sweep["hour"] == best_hour, "highlight"] = "Chosen = best hour" if best_hour == hour else "Best hour"
+    sweep.loc[sweep["hour"].isin(best_hours), "highlight"] = "Best window"
+    sweep.loc[sweep["hour"] == hour, "highlight"] = ("Chosen hour (in best window)" if hour in best_hours
+                                                     else "Chosen hour")
     st.subheader("Predicted travel time by departure hour")
     st.altair_chart(alt.Chart(sweep).mark_bar().encode(
         x=alt.X("hour:O", title="Hour"),
