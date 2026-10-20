@@ -18,6 +18,7 @@ MODES = {
                 "Needs live vehicle counts from a sensor feed."),
 }
 METRICS_PATH = ROOT / "reports" / "phase2_final_metrics.csv"
+QUANTILES_PATH = ROOT / "reports" / "phase2_error_quantiles.csv"
 RANGES_PATH = ROOT / "reports" / "input_ranges.json"
 ROUTES_PATH = ROOT / "reports" / "example_routes.csv"
 ROUTE_FIELDS = ["lat_src", "lon_src", "lat_dest", "lon_dest", "distance"]
@@ -33,9 +34,9 @@ def load_service(path):
 
 
 @st.cache_data
-def load_error_ratio(model_name):
-    metrics = pd.read_csv(METRICS_PATH).set_index("model")
-    return float(metrics.loc[model_name, "mae_over_mean_actual"])
+def load_error_quantiles(model_name):
+    q = pd.read_csv(QUANTILES_PATH).set_index("model").loc[model_name]
+    return float(q["q10_actual_over_predicted"]), float(q["q90_actual_over_predicted"])
 
 
 @st.cache_data
@@ -52,13 +53,13 @@ def predict_or_stop(service, record):
         st.stop()
 
 
-def show_error_band(minutes, error_ratio):
-    band = minutes * error_ratio
-    st.write(f"Typical error: ±{band:.1f} min ({max(minutes - band, 0):.1f}–{minutes + band:.1f} min), "
-             f"from test-set MAE / mean actual = {error_ratio:.1%}")
+def show_interval(minutes, quantiles):
+    q10, q90 = quantiles
+    st.write(f"80% of test-set trips fell within [{minutes * q10:.1f}, {minutes * q90:.1f}] min "
+             f"(prediction × {q10:.3f} to × {q90:.3f}; empirical, marginal over the test set).")
 
 
-def render_forecast(service, record, error_ratio):
+def render_forecast(service, record, quantiles):
     hour = record["hour"]
     minutes = predict_or_stop(service, record)
     sweep = pd.DataFrame({"hour": range(24),
@@ -68,7 +69,7 @@ def render_forecast(service, record, error_ratio):
     best_hour, worst_hour = int(best["hour"]), int(worst["hour"])
 
     st.metric(f"Predicted travel time at {hour:02d}:00", f"{minutes:.1f} min")
-    show_error_band(minutes, error_ratio)
+    show_interval(minutes, quantiles)
     c1, c2, c3 = st.columns(3)
     c1.metric("Best hour", f"{best_hour:02d}:00", f"{best['minutes']:.1f} min", delta_color="off")
     c2.metric("Worst hour", f"{worst_hour:02d}:00", f"{worst['minutes']:.1f} min", delta_color="off")
@@ -94,10 +95,10 @@ def render_forecast(service, record, error_ratio):
     }).set_index("weather"))
 
 
-def render_nowcast(service, record, error_ratio):
+def render_nowcast(service, record, quantiles):
     minutes = predict_or_stop(service, record)
     st.metric(f"Predicted travel time at {record['hour']:02d}:00", f"{minutes:.1f} min")
-    show_error_band(minutes, error_ratio)
+    show_interval(minutes, quantiles)
 
     # Vehicle counts spanning the training density_ratio p1-p99 at this road capacity (same formula as feature_pipeline)
     density = service.ranges["density_ratio"]
@@ -122,7 +123,7 @@ st.title("Travel Time Predictor")
 mode = st.radio("Mode", list(MODES), horizontal=True)
 model_path, model_name, mode_label = MODES[mode]
 service = load_service(str(model_path))
-error_ratio = load_error_ratio(model_name)
+quantiles = load_error_quantiles(model_name)
 st.caption(mode_label)
 
 routes = load_routes()
@@ -158,6 +159,6 @@ if missing:
 record = {**inputs, "day_of_week": day, "hour": hour, "weather": weather}
 
 if mode == "Forecast":
-    render_forecast(service, record, error_ratio)
+    render_forecast(service, record, quantiles)
 else:
-    render_nowcast(service, record, error_ratio)
+    render_nowcast(service, record, quantiles)

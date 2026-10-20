@@ -16,6 +16,7 @@ SLICES_PATH = REPORT_DIR / "phase2_slices.csv"
 IMPORTANCE_PATH = REPORT_DIR / "feature_importance_ranking.csv"
 INPUT_RANGES_PATH = REPORT_DIR / "input_ranges.json"
 EXAMPLE_ROUTES_PATH = REPORT_DIR / "example_routes.csv"
+ERROR_QUANTILES_PATH = REPORT_DIR / "phase2_error_quantiles.csv"
 
 DISTANCE_BANDS = ["Very short", "Short", "Medium", "Long", "Very long"]
 ROUTES_PER_BAND = [3, 3, 2, 2, 2]
@@ -76,6 +77,17 @@ def run_final_report():
         .assign(gain_share=lambda d: d["importance_gain"] / d["importance_gain"].sum())
         for name, b in bundles.items()])
 
+    # Empirical 80% interval multipliers: q10/q90 of actual / predicted over the test set (marginal, not per-input)
+    for name in bundles:
+        if (predictions[name] <= 0).any():
+            raise ValueError(f"{name} has {(predictions[name] <= 0).sum()} non-positive test predictions; actual/predicted undefined")
+    error_quantiles = pd.DataFrame([{
+        "model": name,
+        "q10_actual_over_predicted": float(np.quantile(y / predictions[name], 0.10)),
+        "q90_actual_over_predicted": float(np.quantile(y / predictions[name], 0.90)),
+        "mae_over_mean_actual": float(metrics.set_index("model").loc[name, "mae_over_mean_actual"]),
+    } for name in bundles])
+
     # Inference accepts only inputs inside the p1-p99 range of the training rows
     range_values = {"distance": train["distance"], "haversine_dist": train["haversine_dist"],
                     "raw_tortuosity": raw_tortuosity(train), "density_ratio": train["density_ratio"]}
@@ -95,6 +107,7 @@ def run_final_report():
 
     REPORT_DIR.mkdir(exist_ok=True)
     routes.to_csv(EXAMPLE_ROUTES_PATH, index=False)
+    error_quantiles.to_csv(ERROR_QUANTILES_PATH, index=False)
     with open(INPUT_RANGES_PATH, "w") as f:
         json.dump(input_ranges, f, indent=2)
     metrics.to_csv(METRICS_PATH, index=False)
@@ -110,6 +123,8 @@ def run_final_report():
         print(importance.to_string(index=False, float_format=lambda v: f"{v:.4g}"))
         print(f"\n===== {INPUT_RANGES_PATH.relative_to(ROOT)} =====")
         print(json.dumps(input_ranges, indent=2))
+        print(f"\n===== {ERROR_QUANTILES_PATH.relative_to(ROOT)} =====")
+        print(error_quantiles.to_string(index=False, float_format=lambda v: f"{v:.4f}"))
         print(f"\n===== {EXAMPLE_ROUTES_PATH.relative_to(ROOT)} =====")
         print(routes.to_string(index=False))
 
