@@ -1,7 +1,9 @@
+import math
 import sys
 from pathlib import Path
 
 import altair as alt
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -13,7 +15,7 @@ MODES = {
     "Forecast": (ROOT / "models" / "forecast_model.pkl", "FORECAST",
                  "Forecast: uses only route, day, hour and weather (no live traffic inputs)"),
     "Nowcast": (ROOT / "models" / "nowcast_model.pkl", "NOWCAST",
-                "Nowcast: uses live traffic inputs (vehicles, road capacity, signal time)"),
+                "Needs live vehicle counts from a sensor feed."),
 }
 METRICS_PATH = ROOT / "reports" / "phase2_final_metrics.csv"
 RANGES_PATH = ROOT / "reports" / "input_ranges.json"
@@ -22,6 +24,7 @@ ROUTE_FIELDS = ["lat_src", "lon_src", "lat_dest", "lon_dest", "distance"]
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 HOUR_COLORS = {"Other hours": "#9aa5b1", "Chosen hour": "#1f77b4", "Best hour": "#2ca02c",
                "Chosen = best hour": "#9467bd"}
+VEHICLE_POINTS = 40
 
 
 @st.cache_resource
@@ -93,14 +96,26 @@ def render_forecast(service, record, error_ratio):
 
 def render_nowcast(service, record, error_ratio):
     minutes = predict_or_stop(service, record)
-    st.metric("Predicted travel time", f"{minutes:.1f} min")
+    st.metric(f"Predicted travel time at {record['hour']:02d}:00", f"{minutes:.1f} min")
     show_error_band(minutes, error_ratio)
-    hourly = pd.DataFrame({
-        "hour": range(24),
-        "predicted_minutes": [predict_or_stop(service, {**record, "hour": h}) for h in range(24)],
-    }).set_index("hour")
-    st.subheader("Predicted travel time by hour")
-    st.line_chart(hourly)
+
+    # Vehicle counts spanning the training density_ratio p1-p99 at this road capacity (same formula as feature_pipeline)
+    density = service.ranges["density_ratio"]
+    capacity = max(record["road_capacity"], 10.0)
+    low, high = math.ceil(density["p1"] * capacity), math.floor(density["p99"] * capacity)
+    vehicles = sorted(set(np.linspace(low, high, VEHICLE_POINTS).round().astype(int).tolist()) | {record["vehicles"]})
+    sweep = pd.DataFrame({"vehicles": vehicles,
+                          "minutes": [predict_or_stop(service, {**record, "vehicles": v}) for v in vehicles]})
+    sweep["point"] = np.where(sweep["vehicles"] == record["vehicles"], "Current input", "Sweep")
+
+    st.subheader(f"Predicted travel time vs vehicles (road capacity {record['road_capacity']})")
+    line = alt.Chart(sweep).mark_line(color="#1f77b4").encode(
+        x=alt.X("vehicles:Q", title="Vehicles on route"),
+        y=alt.Y("minutes:Q", title="Predicted minutes"),
+        tooltip=["vehicles", alt.Tooltip("minutes:Q", format=".2f")])
+    current = alt.Chart(sweep[sweep["point"] == "Current input"]).mark_point(
+        color="#d62728", size=120, filled=True).encode(x="vehicles:Q", y="minutes:Q")
+    st.altair_chart(line + current, width="stretch")
 
 
 st.title("Travel Time Predictor")
