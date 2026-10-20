@@ -4,3 +4,5 @@ models/*.pkl
 model_ready_traffic.csv
 model_cleaned_traffic.parquet
 model_featured_traffic.parquet
+!models/nowcast_model.pkl
+!models/forecast_model.pkl
