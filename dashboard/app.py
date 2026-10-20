@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -9,16 +10,18 @@ sys.path.insert(0, str(ROOT / "src"))
 from evaluate_and_explain import TrafficInferenceService  # noqa: E402
 
 MODES = {
-    "Nowcast": (ROOT / "models" / "nowcast_model.pkl", "NOWCAST",
-                "Nowcast: uses live traffic inputs (vehicles, road capacity, signal time)"),
     "Forecast": (ROOT / "models" / "forecast_model.pkl", "FORECAST",
                  "Forecast: uses only route, day, hour and weather (no live traffic inputs)"),
+    "Nowcast": (ROOT / "models" / "nowcast_model.pkl", "NOWCAST",
+                "Nowcast: uses live traffic inputs (vehicles, road capacity, signal time)"),
 }
 METRICS_PATH = ROOT / "reports" / "phase2_final_metrics.csv"
 RANGES_PATH = ROOT / "reports" / "input_ranges.json"
 ROUTES_PATH = ROOT / "reports" / "example_routes.csv"
 ROUTE_FIELDS = ["lat_src", "lon_src", "lat_dest", "lon_dest", "distance"]
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+HOUR_COLORS = {"Other hours": "#9aa5b1", "Chosen hour": "#1f77b4", "Best hour": "#2ca02c",
+               "Chosen = best hour": "#9467bd"}
 
 
 @st.cache_resource
@@ -46,11 +49,66 @@ def predict_or_stop(service, record):
         st.stop()
 
 
+def show_error_band(minutes, error_ratio):
+    band = minutes * error_ratio
+    st.write(f"Typical error: ±{band:.1f} min ({max(minutes - band, 0):.1f}–{minutes + band:.1f} min), "
+             f"from test-set MAE / mean actual = {error_ratio:.1%}")
+
+
+def render_forecast(service, record, error_ratio):
+    hour = record["hour"]
+    minutes = predict_or_stop(service, record)
+    sweep = pd.DataFrame({"hour": range(24),
+                          "minutes": [predict_or_stop(service, {**record, "hour": h}) for h in range(24)]})
+    best = sweep.loc[sweep["minutes"].idxmin()]
+    worst = sweep.loc[sweep["minutes"].idxmax()]
+    best_hour, worst_hour = int(best["hour"]), int(worst["hour"])
+
+    st.metric(f"Predicted travel time at {hour:02d}:00", f"{minutes:.1f} min")
+    show_error_band(minutes, error_ratio)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Best hour", f"{best_hour:02d}:00", f"{best['minutes']:.1f} min", delta_color="off")
+    c2.metric("Worst hour", f"{worst_hour:02d}:00", f"{worst['minutes']:.1f} min", delta_color="off")
+    c3.metric(f"Saved by leaving at {best_hour:02d}:00", f"{minutes - best['minutes']:.1f} min")
+
+    sweep["highlight"] = "Other hours"
+    sweep.loc[sweep["hour"] == hour, "highlight"] = "Chosen hour"
+    sweep.loc[sweep["hour"] == best_hour, "highlight"] = "Chosen = best hour" if best_hour == hour else "Best hour"
+    st.subheader("Predicted travel time by departure hour")
+    st.altair_chart(alt.Chart(sweep).mark_bar().encode(
+        x=alt.X("hour:O", title="Hour"),
+        y=alt.Y("minutes:Q", title="Predicted minutes"),
+        color=alt.Color("highlight:N", title=None,
+                        scale=alt.Scale(domain=list(HOUR_COLORS), range=list(HOUR_COLORS.values()))),
+        tooltip=["hour", alt.Tooltip("minutes:Q", format=".2f")],
+    ), width="stretch")
+
+    st.subheader(f"Same route at {hour:02d}:00 by weather")
+    st.table(pd.DataFrame({
+        "weather": service.categories["weather"],
+        "predicted minutes": [round(predict_or_stop(service, {**record, "weather": w}), 2)
+                              for w in service.categories["weather"]],
+    }).set_index("weather"))
+
+
+def render_nowcast(service, record, error_ratio):
+    minutes = predict_or_stop(service, record)
+    st.metric("Predicted travel time", f"{minutes:.1f} min")
+    show_error_band(minutes, error_ratio)
+    hourly = pd.DataFrame({
+        "hour": range(24),
+        "predicted_minutes": [predict_or_stop(service, {**record, "hour": h}) for h in range(24)],
+    }).set_index("hour")
+    st.subheader("Predicted travel time by hour")
+    st.line_chart(hourly)
+
+
 st.title("Travel Time Predictor")
 mode = st.radio("Mode", list(MODES), horizontal=True)
 model_path, model_name, mode_label = MODES[mode]
 service = load_service(str(model_path))
 error_ratio = load_error_ratio(model_name)
+st.caption(mode_label)
 
 routes = load_routes()
 route_label = st.selectbox("Route (example routes from the test set)", list(routes.index))
@@ -84,17 +142,7 @@ if missing:
     st.stop()
 record = {**inputs, "day_of_week": day, "hour": hour, "weather": weather}
 
-minutes = predict_or_stop(service, record)
-band = minutes * error_ratio
-
-st.caption(mode_label)
-st.metric("Predicted travel time", f"{minutes:.1f} min")
-st.write(f"Typical error: ±{band:.1f} min ({max(minutes - band, 0):.1f}–{minutes + band:.1f} min), "
-         f"from test-set MAE / mean actual = {error_ratio:.1%}")
-
-hourly = pd.DataFrame({
-    "hour": range(24),
-    "predicted_minutes": [predict_or_stop(service, {**record, "hour": h}) for h in range(24)],
-}).set_index("hour")
-st.subheader("Predicted travel time by hour")
-st.line_chart(hourly)
+if mode == "Forecast":
+    render_forecast(service, record, error_ratio)
+else:
+    render_nowcast(service, record, error_ratio)
