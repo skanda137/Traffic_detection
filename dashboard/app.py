@@ -11,6 +11,7 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 from evaluate_and_explain import TrafficInferenceService  # noqa: E402
+from places import PLACES, RANGES, route_from_places  # noqa: E402
 
 MODEL_PATHS = {"FORECAST": ROOT / "models" / "forecast_model.pkl", "NOWCAST": ROOT / "models" / "nowcast_model.pkl"}
 METRICS_PATH = ROOT / "reports" / "phase2_final_metrics.csv"
@@ -32,7 +33,7 @@ DAY_EFFECT_TOLERANCE = 0.03
 VEHICLE_POINTS = 40
 LIMITATIONS = [
     "Random train/val/test split: the dataset has no timestamp, so there is no out-of-time evidence.",
-    "Distance equals straight-line distance in this dataset, so custom coordinates only accept straight-line distances.",
+    "Routes are chosen by place name; distance is the straight-line distance between places.",
     "Live traffic (Nowcast) needs live vehicle counts; Plan ahead (Forecast) is the ahead-of-time estimate.",
     "The 80% range is empirical and marginal over the whole test set, not a per-input confidence interval.",
     "Phase 1 (congestion ratio) is synopsis design, implemented on synthetic data.",
@@ -234,24 +235,30 @@ forecast_service = load_service("FORECAST")
 routes = read_csv(ROUTES_PATH).set_index("label")
 with st.sidebar:
     st.header("Trip")
-    route_label = st.selectbox("Route (example routes from the test set)", list(routes.index))
-    route = routes.loc[route_label]
-    with st.expander("Custom coordinates"):
-        use_custom = st.checkbox("Use custom coordinates instead of the example route")
-        custom = {
-            "lat_src": st.number_input("Source latitude", value=None, format="%.6f"),
-            "lon_src": st.number_input("Source longitude", value=None, format="%.6f"),
-            "lat_dest": st.number_input("Destination latitude", value=None, format="%.6f"),
-            "lon_dest": st.number_input("Destination longitude", value=None, format="%.6f"),
-            "distance": st.number_input("Route distance (km)", value=None, step=0.5),
-        }
+    route_mode = st.radio("Route", ["Between places", "Dataset example routes"])
+    place_names = sorted(PLACES)
+    route_error = None
+    if route_mode == "Between places":
+        src = st.selectbox("From", place_names, index=place_names.index("Silk Board"))
+        dst = st.selectbox("To", place_names, index=place_names.index("Hebbal"))
+        route_label = f"{src} -> {dst}"
+        # Live-traffic defaults for place routes: training medians
+        route = {f: RANGES[f"{f}_median"] for f in ["vehicles", "road_capacity", "signal_time"]}
+        try:
+            inputs = route_from_places(src, dst)
+            st.caption("Distance is the straight-line distance between the two places (the dataset's definition), "
+                       f"{inputs['distance']:.2f} km.")
+        except ValueError as e:
+            inputs, route_error = None, str(e)
+    else:
+        route_label = st.selectbox("Route (example routes from the test set)", list(routes.index))
+        route = routes.loc[route_label]
+        inputs = {f: float(route[f]) for f in ROUTE_FIELDS}
     day = st.selectbox("Day", forecast_service.categories["day_of_week"], format_func=lambda d: DAY_NAMES[d])
     hour = st.slider("Hour", 0, 23, 8)
     weather = st.selectbox("Weather", forecast_service.categories["weather"])
 
-inputs = custom if use_custom else {f: float(route[f]) for f in ROUTE_FIELDS}
-record = {**inputs, "day_of_week": day, "hour": hour, "weather": weather}
-missing = [k for k, v in inputs.items() if v is None]
+record = {**(inputs or {}), "day_of_week": day, "hour": hour, "weather": weather}
 
 render_seconds = {}
 plan_tab, live_tab, about_tab = st.tabs(["Plan ahead", "Live traffic", "About"])
@@ -263,8 +270,8 @@ with about_tab:
 forecast_minutes, input_error = None, None
 with plan_tab:
     start = time.perf_counter()
-    if missing:
-        input_error = f"Missing input: {', '.join(missing)}"
+    if route_error:
+        input_error = f"Invalid input: {route_error}"
     else:
         try:
             forecast_minutes = render_plan(record)

@@ -93,6 +93,19 @@ def run_final_report():
                     "raw_tortuosity": raw_tortuosity(train), "density_ratio": train["density_ratio"]}
     input_ranges = {field: {"p1": float(v.quantile(0.01)), "p99": float(v.quantile(0.99))}
                     for field, v in range_values.items()}
+    # Raw tortuosity is effectively constant (std ~1e-4), so p1/p99 bounds would be numeric noise: use training min/max
+    tortuosity = range_values["raw_tortuosity"]
+    input_ranges["raw_tortuosity"] = {"p1": float(tortuosity.min()), "p99": float(tortuosity.max())}
+    # Dashboard defaults: place-name routes (distance = haversine x median tortuosity, coordinates inside the
+    # training box) and live-traffic inputs at their training medians
+    train_raw = raw.loc[train.index]
+    input_ranges["raw_tortuosity_median"] = float(tortuosity.median())
+    input_ranges["lat_min"] = float(min(train_raw["lat_src"].min(), train_raw["lat_dest"].min()))
+    input_ranges["lat_max"] = float(max(train_raw["lat_src"].max(), train_raw["lat_dest"].max()))
+    input_ranges["lon_min"] = float(min(train_raw["lon_src"].min(), train_raw["lon_dest"].min()))
+    input_ranges["lon_max"] = float(max(train_raw["lon_src"].max(), train_raw["lon_dest"].max()))
+    for field in ["vehicles", "road_capacity", "signal_time"]:
+        input_ranges[f"{field}_median"] = float(train[field].median())
 
     # Dashboard example routes: test rows that pass every input check, stratified by distance quintile
     valid = test[~input_range_violations(test, input_ranges).any(axis=1)]
