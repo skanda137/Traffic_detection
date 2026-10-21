@@ -1,1 +1,11 @@
-DATASET PROVENANCE: <Member A to fill>
+Dataset Provenance
+
+The traffic dataset used in this project was obtained from Kaggle, from the Bangalore Traffic Analysis Dataset published by the uploader asshridattaaigal.
+
+Source: https://www.kaggle.com/datasets/asshridattaaigal/bangalore-traffic-analysis-dataset
+
+The downloaded CSV contained approximately 2.1 million records and 16 original columns describing route locations, coordinates, distance, time-related attributes, weather, traffic conditions, and travel time.
+
+The dataset was subsequently audited, cleaned, validated, and transformed into a model-ready format as part of this project.
+
+The original data-collection method and whether all observations represent real-world measurements have not been independently verified. Accordingly, the dataset is described as Kaggle-sourced rather than as independently collected live traffic data.
